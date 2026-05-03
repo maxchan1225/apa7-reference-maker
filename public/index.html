@@ -312,6 +312,7 @@
               <label for="type">資料類型</label>
               <select id="type">
                 <option value="journal">期刊文章</option>
+                <option value="book">書籍</option>
                 <option value="webpage">網頁</option>
                 <option value="youtube">YouTube 影片</option>
               </select>
@@ -340,8 +341,8 @@
               <input id="title" placeholder="文章、網頁或影片標題">
             </div>
             <div>
-              <label for="container">期刊名稱 / 網站名稱 / 平台名稱</label>
-              <input id="container" placeholder="例：The Journal of Nursing Research 或 YouTube">
+              <label for="container">期刊名稱 / 出版社 / 網站名稱 / 平台名稱</label>
+              <input id="container" placeholder="例：The Journal of Nursing Research、SAGE 或 YouTube">
             </div>
             <div class="grid-3">
               <div>
@@ -622,6 +623,13 @@
     }
 
     function extractText(raw) {
+      const apaReference = parseFullApaReference(raw);
+      if (apaReference) {
+        applyParsedReference(apaReference);
+        setStatus("已解析完整 APA 參考文獻；請檢查欄位。", "success");
+        return;
+      }
+
       const lines = raw.split(/\n+/).map((line) => cleanText(line)).filter(Boolean);
       const dateMatch = raw.match(/\((\d{4}|n\.d\.|無日期)(?:,\s*([A-Za-z]+|\d{1,2})\s*(\d{1,2})?)?\)|(\d{4})[-/](\d{1,2})[-/](\d{1,2})/i);
       const url = findUrl(raw);
@@ -647,6 +655,125 @@
       if (titleLine && !fields.title.value) fields.title.value = titleLine.replace(/^["“]|["”]$/g, "");
       if (!fields.container.value && url) fields.container.value = hostName(url);
       setStatus("已用文字規則解析；請檢查欄位。", "success");
+    }
+
+    function parseFullApaReference(raw) {
+      const text = cleanText(raw);
+      const match = text.match(/^(.*?)\s*\((\d{4}|n\.d\.)\)\.\s*(.+)$/i);
+      if (!match) return null;
+
+      const authors = normalizeAuthorList(match[1]);
+      const year = match[2];
+      const url = findUrl(text) || "";
+      const rest = match[3].replace(/https?:\/\/\S+/i, "").trim();
+      const book = parseBookTail(rest);
+
+      if (book) {
+        return {
+          type: "book",
+          authors,
+          year,
+          title: book.title,
+          container: book.publisher,
+          volume: "",
+          issue: "",
+          pages: "",
+          url
+        };
+      }
+
+      const article = rest.match(/^(.*?)\.\s*(.+)$/);
+      const title = article ? article[1].trim() : rest.replace(/\.$/, "");
+      const tail = article ? article[2].trim() : "";
+
+      if (looksLikeBookTail(tail)) {
+        return {
+          type: "book",
+          authors,
+          year,
+          title,
+          container: tail.replace(/\.$/, ""),
+          volume: "",
+          issue: "",
+          pages: "",
+          url
+        };
+      }
+
+      const journal = parseJournalTail(tail);
+      return {
+        type: "journal",
+        authors,
+        year,
+        title,
+        container: journal.container,
+        volume: journal.volume,
+        issue: journal.issue,
+        pages: journal.pages,
+        url
+      };
+    }
+
+    function parseBookTail(rest) {
+      const cleaned = rest.replace(/\s+https?:\/\/\S+/i, "").replace(/\.$/, "").trim();
+      const editionMatch = cleaned.match(/^(.*\([^)]*ed\.\))\.\s+(.+)$/i);
+      if (editionMatch) {
+        return {
+          title: editionMatch[1].trim(),
+          publisher: editionMatch[2].replace(/\.$/, "").trim()
+        };
+      }
+
+      const lastBreak = cleaned.lastIndexOf(". ");
+      if (lastBreak > 0) {
+        const title = cleaned.slice(0, lastBreak).trim();
+        const publisher = cleaned.slice(lastBreak + 2).replace(/\.$/, "").trim();
+        if (title && publisher && !publisher.includes(",")) return { title, publisher };
+      }
+
+      return null;
+    }
+
+    function parseJournalTail(tail) {
+      const parts = tail.replace(/\.$/, "").split(",").map((part) => part.trim()).filter(Boolean);
+      const issueOnly = tail.match(/\(([^)]+)\)/);
+      const volumeIssue = tail.match(/^([^,]+),\s*([^,(]+)?\s*(?:\(([^)]+)\))?(?:,\s*(.+))?$/);
+      return {
+        container: parts[0] ? parts[0].replace(/\s*\([^)]*\)\s*$/, "") : "",
+        volume: volumeIssue && volumeIssue[2] ? volumeIssue[2].trim() : "",
+        issue: volumeIssue && volumeIssue[3] ? volumeIssue[3].trim() : (issueOnly ? issueOnly[1].trim() : ""),
+        pages: volumeIssue && volumeIssue[4] ? volumeIssue[4].trim() : ""
+      };
+    }
+
+    function looksLikeBookTail(tail) {
+      const cleaned = tail.replace(/\.$/, "").trim();
+      return Boolean(cleaned)
+        && !/,/.test(cleaned)
+        && !/\b\d+\s*\(/.test(cleaned)
+        && !/^https?:\/\//i.test(cleaned);
+    }
+
+    function normalizeAuthorList(value) {
+      return cleanText(value)
+        .replace(/,\s*&\s*/g, "; ")
+        .replace(/\s*&\s*/g, "; ")
+        .replace(/,\s+([A-Z][A-Za-z' -]+,\s*[A-Z])/g, "; $1")
+        .replace(/\.$/, "");
+    }
+
+    function applyParsedReference(parsed) {
+      fields.type.value = parsed.type || "journal";
+      fields.authors.value = parsed.authors || "";
+      fields.year.value = parsed.year || "n.d.";
+      fields.month.value = "";
+      fields.day.value = "";
+      fields.title.value = parsed.title || "";
+      fields.container.value = parsed.container || "";
+      fields.volume.value = parsed.volume || "";
+      fields.issue.value = parsed.issue || "";
+      fields.pages.value = parsed.pages || "";
+      fields.url.value = parsed.url || "";
     }
 
     function generate() {
@@ -697,6 +824,10 @@
         const urlPart = item.url ? ` ${item.url}` : "";
         html = `${escapeHtml(author)} (${escapeHtml(date)}). ${escapeHtml(title)}. ${volumeIssue}${escapeHtml(pagePart)}.${escapeHtml(urlPart)}`;
         text = `${author} (${date}). ${title}. ${plainVolumeIssue}${pagePart}.${urlPart}`;
+      } else if (item.type === "book") {
+        const urlPart = item.url ? ` ${item.url}` : "";
+        html = `${escapeHtml(author)} (${escapeHtml(date)}). <i>${escapeHtml(title)}</i>. ${escapeHtml(item.container)}.${escapeHtml(urlPart)}`;
+        text = `${author} (${date}). ${title}. ${item.container}.${urlPart}`;
       } else if (item.type === "youtube") {
         const urlPart = item.url ? ` ${item.url}` : "";
         html = `${escapeHtml(author)} (${escapeHtml(date)}). <i>${escapeHtml(title)}</i> [Video]. ${escapeHtml(item.container || "YouTube")}.${escapeHtml(urlPart)}`;
