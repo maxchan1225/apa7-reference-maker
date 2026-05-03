@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "teacherstudy-ac70b"
+  },
+  "targets": {
+    "teacherstudy-ac70b": {
+      "hosting": {
+        "apa7": [
+          "teacherstudy-ac70b-apa7"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
