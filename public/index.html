@@ -480,6 +480,24 @@
 
     async function extractDoi(doi) {
       const normalized = doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "");
+      try {
+        await extractCrossrefDoi(normalized);
+        return;
+      } catch (error) {
+        console.info("Crossref lookup failed, trying DOI Citation Formatter.", error);
+      }
+
+      try {
+        await extractCitationFormatterDoi(normalized);
+        return;
+      } catch (error) {
+        console.info("DOI Citation Formatter lookup failed.", error);
+      }
+
+      throw new Error("DOI lookup failed");
+    }
+
+    async function extractCrossrefDoi(normalized) {
       const response = await fetch(`https://api.crossref.org/works/${encodeURIComponent(normalized)}`);
       if (!response.ok) throw new Error("Crossref lookup failed");
       const data = (await response.json()).message;
@@ -496,6 +514,60 @@
       fields.pages.value = data.page || "";
       fields.url.value = data.DOI ? `https://doi.org/${data.DOI}` : `https://doi.org/${normalized}`;
       setStatus("已從 Crossref 抓取期刊資料。", "success");
+    }
+
+    async function extractCitationFormatterDoi(normalized) {
+      const formatterUrl = `https://citation.doi.org/format?doi=${encodeURIComponent(normalized)}&style=apa&lang=zh-TW`;
+      const response = await fetch(formatterUrl);
+      if (!response.ok) throw new Error("Citation Formatter lookup failed");
+      const apaText = cleanText(await response.text());
+      if (!apaText || !apaText.includes("doi.org")) throw new Error("Citation Formatter returned empty metadata");
+
+      const parsed = parseApaTextReference(apaText);
+      fields.type.value = "journal";
+      fields.authors.value = parsed.authors || "";
+      fields.year.value = parsed.year || "n.d.";
+      fields.month.value = "";
+      fields.day.value = "";
+      fields.title.value = parsed.title || "";
+      fields.container.value = parsed.container || "";
+      fields.volume.value = parsed.volume || "";
+      fields.issue.value = parsed.issue || "";
+      fields.pages.value = parsed.pages || "";
+      fields.url.value = `https://doi.org/${normalized}`;
+      setStatus("Crossref 沒有這筆 DOI；已改用 DOI Citation Formatter 抓取資料。", "success");
+    }
+
+    function parseApaTextReference(apaText) {
+      const withoutUrl = apaText.replace(/https?:\/\/doi\.org\/\S+/i, "").trim();
+      const match = withoutUrl.match(/^(.*?)\s*\((\d{4}|n\.d\.)\)\.\s*(.*?)\.\s*(.*)$/i);
+      if (!match) {
+        return {
+          authors: "",
+          year: "n.d.",
+          title: withoutUrl,
+          container: "",
+          volume: "",
+          issue: "",
+          pages: ""
+        };
+      }
+
+      const authorText = match[1].trim();
+      const tail = match[4].replace(/\.$/, "").trim();
+      const parts = tail.split(",").map((part) => part.trim()).filter(Boolean);
+      const issueOnly = tail.match(/\(([^)]+)\)/);
+      const volumeIssue = tail.match(/^([^,]+),\s*([^,(]+)?\s*(?:\(([^)]+)\))?(?:,\s*(.+))?$/);
+
+      return {
+        authors: authorText.replace(/\.$/, "").replace(/\s*&\s*/g, "; "),
+        year: match[2],
+        title: match[3].trim(),
+        container: parts[0] ? parts[0].replace(/\s*\([^)]*\)\s*$/, "") : "",
+        volume: volumeIssue && volumeIssue[2] ? volumeIssue[2].trim() : "",
+        issue: volumeIssue && volumeIssue[3] ? volumeIssue[3].trim() : (issueOnly ? issueOnly[1].trim() : ""),
+        pages: volumeIssue && volumeIssue[4] ? volumeIssue[4].trim() : ""
+      };
     }
 
     async function extractYouTube(input) {
@@ -610,12 +682,16 @@
       let text = "";
 
       if (item.type === "journal") {
+        if (hasCjk(`${item.authors.join("")}${item.title}${item.container}`)) {
+          return buildChineseJournalReference(item);
+        }
+
         const volumeIssue = item.volume
           ? `<i>${escapeHtml(item.container)}${item.container ? ", " : ""}${escapeHtml(item.volume)}</i>${item.issue ? `(${escapeHtml(item.issue)})` : ""}`
-          : (item.container ? `<i>${escapeHtml(item.container)}</i>` : "");
+          : (item.container ? `<i>${escapeHtml(item.container)}</i>${item.issue ? `, (${escapeHtml(item.issue)})` : ""}` : "");
         const plainVolumeIssue = item.volume
           ? `${item.container}${item.container ? ", " : ""}${item.volume}${item.issue ? `(${item.issue})` : ""}`
-          : item.container;
+          : `${item.container}${item.issue ? `, (${item.issue})` : ""}`;
         const pagePart = item.pages ? `, ${item.pages}` : "";
         const urlPart = item.url ? ` ${item.url}` : "";
         html = `${escapeHtml(author)} (${escapeHtml(date)}). ${escapeHtml(title)}. ${volumeIssue}${escapeHtml(pagePart)}.${escapeHtml(urlPart)}`;
@@ -634,9 +710,39 @@
     }
 
     function buildCitation(item) {
+      if (hasCjk(`${item.authors.join("")}${item.title}`)) {
+        return buildChineseCitation(item);
+      }
       const names = citationAuthors(item.authors);
       const year = item.year || "n.d.";
       return `(${names}, ${year})`;
+    }
+
+    function buildChineseJournalReference(item) {
+      const author = item.authors.length ? item.authors.map((author) => author.replace(/\.$/, "")).join("、") : "作者不詳";
+      const date = item.year || "n.d.";
+      const title = sentenceCase(item.title || "未命名標題");
+      const volumeIssueHtml = item.volume
+        ? `<i>${escapeHtml(item.container)}，${escapeHtml(item.volume)}</i>${item.issue ? `（${escapeHtml(item.issue)}）` : ""}`
+        : `<i>${escapeHtml(item.container)}</i>${item.issue ? `，（${escapeHtml(item.issue)}）` : ""}`;
+      const volumeIssueText = item.volume
+        ? `${item.container}，${item.volume}${item.issue ? `（${item.issue}）` : ""}`
+        : `${item.container}${item.issue ? `，（${item.issue}）` : ""}`;
+      const pages = item.pages ? `，${item.pages}` : "";
+      const url = item.url ? ` ${item.url}` : "";
+      return {
+        html: `${escapeHtml(author)}（${escapeHtml(date)}）．${escapeHtml(title)}．${volumeIssueHtml}${escapeHtml(pages)}。${escapeHtml(url)}`,
+        text: `${author}（${date}）．${title}．${volumeIssueText}${pages}。${url}`.trim()
+      };
+    }
+
+    function buildChineseCitation(item) {
+      const year = item.year || "n.d.";
+      const names = item.authors.map((author) => author.replace(/\.$/, ""));
+      if (!names.length) return `（作者不詳，${year}）`;
+      if (names.length === 1) return `（${names[0]}，${year}）`;
+      if (names.length === 2) return `（${names[0]}與${names[1]}，${year}）`;
+      return `（${names[0]}等，${year}）`;
     }
 
     function parseAuthors(value) {
@@ -765,6 +871,10 @@
         "\"": "&quot;",
         "'": "&#39;"
       }[char]));
+    }
+
+    function hasCjk(value) {
+      return /[\u4e00-\u9fff]/.test(value || "");
     }
 
     async function copyText(text) {
