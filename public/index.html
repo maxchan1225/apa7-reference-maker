@@ -232,6 +232,30 @@
       margin-top: 14px;
     }
 
+    .related-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .related-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcff;
+    }
+
+    .related-reference {
+      line-height: 1.65;
+      overflow-wrap: anywhere;
+    }
+
+    .related-meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
     .copy-row {
       display: flex;
       justify-content: flex-end;
@@ -391,6 +415,12 @@
           </div>
         </div>
 
+        <div class="output-block">
+          <label>替代參考文獻備用</label>
+          <div id="relatedStatus" class="hint">抓到 DOI 並成功連到 Crossref 後，會在這裡列出相關候選文獻。</div>
+          <div id="relatedList" class="related-list"></div>
+        </div>
+
         <p class="hint">提醒：自動抓取會受網站授權、CORS、網頁中繼資料完整度影響。正式交稿前請對照原文檢查作者、日期、標題大小寫、卷期頁碼與 DOI。</p>
       </section>
     </section>
@@ -417,6 +447,9 @@
     const referencePlain = document.getElementById("referencePlain");
     const citationPreview = document.getElementById("citationPreview");
     const citationPlain = document.getElementById("citationPlain");
+    const relatedStatus = document.getElementById("relatedStatus");
+    const relatedList = document.getElementById("relatedList");
+    let relatedCandidates = [];
 
     const monthNames = {
       "1": "January", "01": "January", "jan": "January", "january": "January",
@@ -460,6 +493,7 @@
       clearFields();
       const url = findUrl(raw);
       const doi = findDoi(raw);
+      clearRelated();
 
       try {
         if (isYouTube(url || raw)) {
@@ -516,6 +550,7 @@
       fields.pages.value = data.page || (data["article-number"] ? `Article ${data["article-number"]}` : "");
       fields.url.value = data.DOI ? `https://doi.org/${data.DOI}` : `https://doi.org/${normalized}`;
       setStatus("已從 Crossref 抓取期刊資料。", "success");
+      await loadRelatedWorks(data);
     }
 
     async function extractCitationFormatterDoi(normalized) {
@@ -655,6 +690,121 @@
       if (titleLine && !fields.title.value) fields.title.value = titleLine.replace(/^["“]|["”]$/g, "");
       if (!fields.container.value && url) fields.container.value = hostName(url);
       setStatus("已用文字規則解析；請檢查欄位。", "success");
+    }
+
+    async function loadRelatedWorks(source) {
+      clearRelated("正在從 Crossref 查找相關候選文獻...");
+      const title = cleanText((source.title && source.title[0]) || fields.title.value);
+      if (!title) {
+        clearRelated("缺少標題，無法查找相關候選文獻。");
+        return;
+      }
+
+      const sourceDoi = cleanDoi(source.DOI || fields.url.value);
+      const query = encodeURIComponent(buildRelatedQuery(title));
+      const response = await fetch(`https://api.crossref.org/works?query.bibliographic=${query}&rows=8&sort=relevance`);
+      if (!response.ok) {
+        clearRelated("Crossref 相關候選文獻查詢暫時失敗。");
+        return;
+      }
+
+      const data = await response.json();
+      relatedCandidates = (data.message.items || [])
+        .filter((work) => cleanDoi(work.DOI || "") !== sourceDoi)
+        .map(crossrefWorkToItem)
+        .filter((item) => item.title && item.authors.length)
+        .slice(0, 5);
+
+      renderRelatedWorks();
+    }
+
+    function buildRelatedQuery(title) {
+      const stopWords = new Set([
+        "the", "and", "between", "with", "from", "into", "that", "this", "those",
+        "these", "their", "there", "where", "when", "what", "which", "who", "whom",
+        "in", "on", "of", "for", "to", "a", "an", "by", "as", "at", "is", "are"
+      ]);
+      const keywords = title
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, " ")
+        .split(/\s+/)
+        .filter((word) => word.length > 2 && !stopWords.has(word));
+      return [...new Set(keywords)].slice(0, 8).join(" ") || title;
+    }
+
+    function crossrefWorkToItem(work) {
+      const dateParts = work.published && work.published["date-parts"] && work.published["date-parts"][0] || [];
+      return {
+        type: work.type === "book" || work.type === "monograph" ? "book" : "journal",
+        authors: (work.author || []).map(formatCrossrefAuthor),
+        year: String(dateParts[0] || "n.d."),
+        month: dateParts[1] ? monthNames[String(dateParts[1]).padStart(2, "0")] : "",
+        day: dateParts[2] ? String(dateParts[2]) : "",
+        title: cleanText((work.title && work.title[0]) || ""),
+        container: cleanText((work["container-title"] && work["container-title"][0]) || work.publisher || ""),
+        volume: work.volume || "",
+        issue: work.issue || "",
+        pages: work.page || (work["article-number"] ? `Article ${work["article-number"]}` : ""),
+        url: work.DOI ? `https://doi.org/${work.DOI}` : (work.URL || "")
+      };
+    }
+
+    function renderRelatedWorks() {
+      relatedList.innerHTML = "";
+      if (!relatedCandidates.length) {
+        relatedStatus.textContent = "Crossref 沒有找到合適的替代候選文獻。";
+        return;
+      }
+
+      relatedStatus.textContent = `找到 ${relatedCandidates.length} 筆相關候選文獻，可作為替代參考文獻備用。`;
+      relatedList.innerHTML = relatedCandidates.map((item, index) => {
+        const reference = buildReference(item);
+        return `
+          <article class="related-card">
+            <div class="related-reference">${reference.html}</div>
+            <div class="related-meta">${escapeHtml(item.container || "Crossref")} ${item.year ? `｜${escapeHtml(item.year)}` : ""}</div>
+            <div class="copy-row">
+              <button class="secondary tiny" type="button" data-copy-related="${index}">複製</button>
+              <button class="tiny" type="button" data-use-related="${index}">套用到欄位</button>
+            </div>
+          </article>
+        `;
+      }).join("");
+
+      relatedList.querySelectorAll("[data-copy-related]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const reference = buildReference(relatedCandidates[Number(button.dataset.copyRelated)]);
+          copyText(reference.text);
+        });
+      });
+
+      relatedList.querySelectorAll("[data-use-related]").forEach((button) => {
+        button.addEventListener("click", () => {
+          applyItemToFields(relatedCandidates[Number(button.dataset.useRelated)]);
+          generate();
+          setStatus("已把候選文獻套用到欄位。", "success");
+        });
+      });
+    }
+
+    function clearRelated(message = "抓到 DOI 並成功連到 Crossref 後，會在這裡列出相關候選文獻。") {
+      relatedCandidates = [];
+      relatedStatus.textContent = message;
+      relatedList.innerHTML = "";
+    }
+
+    function applyItemToFields(item) {
+      fields.type.value = item.type || "journal";
+      fields.authors.value = (item.authors || []).join("; ");
+      fields.year.value = item.year || "n.d.";
+      fields.month.value = item.month || "";
+      fields.day.value = item.day || "";
+      fields.title.value = item.title || "";
+      fields.container.value = item.container || "";
+      fields.volume.value = item.volume || "";
+      fields.issue.value = item.issue || "";
+      fields.pages.value = item.pages || "";
+      fields.url.value = item.url || "";
     }
 
     function parseFullApaReference(raw) {
@@ -1055,6 +1205,7 @@
         if (field.tagName === "SELECT") field.value = "journal";
         else field.value = "";
       });
+      clearRelated();
     }
 
     function setStatus(text, type = "") {
