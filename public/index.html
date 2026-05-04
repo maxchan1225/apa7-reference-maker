@@ -481,7 +481,7 @@
     }
 
     async function extractDoi(doi) {
-      const normalized = doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "");
+      const normalized = cleanDoi(doi);
       try {
         await extractCrossrefDoi(normalized);
         return;
@@ -513,7 +513,7 @@
       fields.container.value = cleanText((data["container-title"] && data["container-title"][0]) || "");
       fields.volume.value = data.volume || "";
       fields.issue.value = data.issue || "";
-      fields.pages.value = data.page || "";
+      fields.pages.value = data.page || (data["article-number"] ? `Article ${data["article-number"]}` : "");
       fields.url.value = data.DOI ? `https://doi.org/${data.DOI}` : `https://doi.org/${normalized}`;
       setStatus("已從 Crossref 抓取期刊資料。", "success");
     }
@@ -634,7 +634,7 @@
       const dateMatch = raw.match(/\((\d{4}|n\.d\.|無日期)(?:,\s*([A-Za-z]+|\d{1,2})\s*(\d{1,2})?)?\)|(\d{4})[-/](\d{1,2})[-/](\d{1,2})/i);
       const url = findUrl(raw);
       const doi = findDoi(raw);
-      fields.url.value = doi ? `https://doi.org/${doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")}` : (url || fields.url.value);
+      fields.url.value = doi ? `https://doi.org/${cleanDoi(doi)}` : (url || fields.url.value);
 
       if (dateMatch) {
         if (dateMatch[1]) {
@@ -950,13 +950,20 @@
     function normalizeDoiUrl(value) {
       if (!value) return "";
       const doi = findDoi(value);
-      if (doi) return `https://doi.org/${doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")}`;
+      if (doi) return `https://doi.org/${cleanDoi(doi)}`;
       return value;
     }
 
     function findDoi(text) {
       const match = text.match(/(?:https?:\/\/(?:dx\.)?doi\.org\/)?(10\.\d{4,9}\/[^\s"'<>]+)/i);
-      return match ? match[1].replace(/[).,;]+$/, "") : "";
+      return match ? cleanDoi(match[1]) : "";
+    }
+
+    function cleanDoi(value) {
+      return String(value || "")
+        .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+        .replace(/[).,;]+$/, "")
+        .replace(/\/(full|abstract|pdf|xml|epub|html?)$/i, "");
     }
 
     function isDoiOnly(text) {
